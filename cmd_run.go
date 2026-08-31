@@ -16,9 +16,9 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	"github.com/lumaxdev/nodeservice-agent/internal/enroll"
-	"github.com/lumaxdev/nodeservice-agent/internal/state"
-	"github.com/lumaxdev/nodeservice-agent/internal/transport"
+	"github.com/feauche/nodeservice-agent/internal/enroll"
+	"github.com/feauche/nodeservice-agent/internal/state"
+	"github.com/feauche/nodeservice-agent/internal/transport"
 )
 
 func envOr(key, def string) string {

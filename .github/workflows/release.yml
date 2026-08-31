@@ -1,0 +1,32 @@
+# Релиз агента: git tag v* → тесты → сборка linux amd64+arm64 → GitHub Release.
+# Панель ставит агент командой из карточки сервера: она качает install.sh и бинарь из последнего релиза.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Проверки
+        run: |
+          go vet ./...
+          go test ./...
+      - name: Сборка (amd64 + arm64 + checksums)
+        run: make build-all VERSION="${GITHUB_REF_NAME}"
+      - name: Публикация релиза
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*
+            scripts/install.sh
+            deploy/nodeservice-agent.service

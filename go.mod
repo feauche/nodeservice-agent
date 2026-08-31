@@ -1,4 +1,4 @@
-module github.com/lumaxdev/nodeservice-agent
+module github.com/feauche/nodeservice-agent
 
 go 1.25.0
 

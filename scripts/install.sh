@@ -1,11 +1,11 @@
 #!/bin/sh
 # Установка агента NodeService: релиз с GitHub, systemd-юнит, привязка к панели.
 # Запуск (команду с токеном выдаёт панель):
-#   curl -fsSL https://raw.githubusercontent.com/LumaxDev/nodeservice-agent/main/scripts/install.sh \
+#   curl -fsSL https://raw.githubusercontent.com/feauche/nodeservice-agent/main/scripts/install.sh \
 #     | sh -s -- --panel https://panel.example.com --token nse_...
 set -eu
 
-REPO="LumaxDev/nodeservice-agent"
+REPO="feauche/nodeservice-agent"
 BIN_PATH="/usr/local/bin/nodeservice-agent"
 STATE_DIR="/var/lib/nodeservice-agent"
 ENV_FILE="/etc/nodeservice-agent.env"
@@ -77,7 +77,7 @@ chmod 0600 "$ENV_FILE"
 cat > "$UNIT_PATH" <<'EOF'
 [Unit]
 Description=NodeService agent (метрики и heartbeat ноды)
-Documentation=https://github.com/LumaxDev/nodeservice-agent
+Documentation=https://github.com/feauche/nodeservice-agent
 After=network-online.target
 Wants=network-online.target
 

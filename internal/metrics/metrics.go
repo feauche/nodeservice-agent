@@ -20,7 +20,7 @@ import (
 	"github.com/shirou/gopsutil/v4/mem"
 	"github.com/shirou/gopsutil/v4/net"
 
-	"github.com/lumaxdev/nodeservice-agent/internal/proto"
+	"github.com/feauche/nodeservice-agent/internal/proto"
 )
 
 const conntrackPath = "/proc/sys/net/netfilter/nf_conntrack_count"

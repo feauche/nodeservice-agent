@@ -17,9 +17,9 @@ import (
 	"github.com/coder/websocket/wsjson"
 	"github.com/rs/zerolog"
 
-	"github.com/lumaxdev/nodeservice-agent/internal/metrics"
-	"github.com/lumaxdev/nodeservice-agent/internal/proto"
-	"github.com/lumaxdev/nodeservice-agent/internal/state"
+	"github.com/feauche/nodeservice-agent/internal/metrics"
+	"github.com/feauche/nodeservice-agent/internal/proto"
+	"github.com/feauche/nodeservice-agent/internal/state"
 )
 
 // ErrAuthRejected — панель не признала агента (ключ не совпал или сервер удалён).

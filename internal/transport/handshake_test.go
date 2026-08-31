@@ -15,7 +15,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
-	"github.com/lumaxdev/nodeservice-agent/internal/proto"
+	"github.com/feauche/nodeservice-agent/internal/proto"
 )
 
 const testServerID = "0192c000-0000-7000-8000-000000000001"

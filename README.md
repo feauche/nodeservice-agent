@@ -12,7 +12,7 @@
 Команду с одноразовым токеном выдаёт панель (карточка сервера → токен агента):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/LumaxDev/nodeservice-agent/main/scripts/install.sh \
+curl -fsSL https://raw.githubusercontent.com/feauche/nodeservice-agent/main/scripts/install.sh \
   | sh -s -- --panel https://panel.example.com --token nse_...
 ```
 
