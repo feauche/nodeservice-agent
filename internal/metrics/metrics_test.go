@@ -81,6 +81,25 @@ func TestXrayRunning(t *testing.T) {
 	if got := xrayRunning(root); got == nil || !*got {
 		t.Fatalf("с xray ожидали true, получили %v", got)
 	}
+	// другое имя бинаря: comm обрезан/иной, но argv0 говорит xray
+	if err := os.RemoveAll(root + "/777"); err != nil {
+		t.Fatal(err)
+	}
+	mk("778", "node")
+	if err := os.WriteFile(root+"/778/cmdline", []byte("/usr/local/bin/Xray-linux-64\x00run\x00"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := xrayRunning(root); got == nil || !*got {
+		t.Fatalf("Xray-linux-64 в cmdline ожидали true, получили %v", got)
+	}
+	for _, c := range []struct {
+		in   string
+		want bool
+	}{{"xray", true}, {"/usr/bin/xray-core", true}, {"Xray-linux-64", true}, {"node", false}, {"proxray", false}} {
+		if got := looksLikeXray(c.in); got != c.want {
+			t.Fatalf("looksLikeXray(%q) = %v, ожидали %v", c.in, got, c.want)
+		}
+	}
 	if got := xrayRunning(root + "/nope"); got != nil {
 		t.Fatalf("нет /proc — ожидали nil, получили %v", got)
 	}

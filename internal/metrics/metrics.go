@@ -118,8 +118,10 @@ func (c *Collector) Collect(ctx context.Context) (*proto.Metrics, error) {
 	return m, errors.Join(probs...)
 }
 
-// xrayRunning ищет процесс с именем xray по /proc/<pid>/comm — так видно и процесс внутри
-// контейнера ноды (remnanode), потому что контейнеры делят ядро с хостом. Прав не нужно.
+// xrayRunning ищет процесс xray по /proc — так видно и процесс внутри контейнера ноды
+// (remnanode), потому что контейнеры делят ядро с хостом; comm и cmdline читаются без прав.
+// Имя бинаря у сборок разное (xray, xray-core, Xray-linux-64), поэтому смотрим и comm, и
+// argv0 из cmdline: имя файла начинается с «xray» без учёта регистра.
 // Не смогли прочитать /proc (не linux) — nil, панель считает «неизвестно».
 func xrayRunning(procRoot string) *bool {
 	entries, err := os.ReadDir(procRoot)
@@ -134,16 +136,29 @@ func xrayRunning(procRoot string) *bool {
 		if _, err := strconv.Atoi(e.Name()); err != nil {
 			continue
 		}
-		raw, err := os.ReadFile(procRoot + "/" + e.Name() + "/comm")
-		if err != nil {
-			continue
-		}
-		if strings.TrimSpace(string(raw)) == "xray" {
+		dir := procRoot + "/" + e.Name()
+		if comm, err := os.ReadFile(dir + "/comm"); err == nil && looksLikeXray(strings.TrimSpace(string(comm))) {
 			found = true
 			break
 		}
+		if cmd, err := os.ReadFile(dir + "/cmdline"); err == nil {
+			argv0, _, _ := strings.Cut(string(cmd), "\x00")
+			if looksLikeXray(argv0) {
+				found = true
+				break
+			}
+		}
 	}
 	return &found
+}
+
+// looksLikeXray: имя файла (без пути) начинается с «xray» без учёта регистра.
+func looksLikeXray(name string) bool {
+	name = strings.TrimSpace(name)
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	return strings.HasPrefix(strings.ToLower(name), "xray")
 }
 
 // conntrackCount читает счётчик conntrack; недоступен (не linux, нет модуля) — null.
