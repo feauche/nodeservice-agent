@@ -62,7 +62,7 @@ func NewCollector() *Collector { return &Collector{} }
 // Collect собирает метрики. Ошибка не фатальна: возвращаются метрики,
 // которые удалось получить, плюс объединённая ошибка для лога.
 func (c *Collector) Collect(ctx context.Context) (*proto.Metrics, error) {
-	m := &proto.Metrics{ConntrackCount: conntrackCount()}
+	m := &proto.Metrics{ConntrackCount: conntrackCount(), XrayRunning: xrayRunning("/proc")}
 	var probs []error
 
 	if pct, err := cpu.PercentWithContext(ctx, 0, false); err != nil {
@@ -116,6 +116,34 @@ func (c *Collector) Collect(ctx context.Context) (*proto.Metrics, error) {
 	}
 
 	return m, errors.Join(probs...)
+}
+
+// xrayRunning ищет процесс с именем xray по /proc/<pid>/comm — так видно и процесс внутри
+// контейнера ноды (remnanode), потому что контейнеры делят ядро с хостом. Прав не нужно.
+// Не смогли прочитать /proc (не linux) — nil, панель считает «неизвестно».
+func xrayRunning(procRoot string) *bool {
+	entries, err := os.ReadDir(procRoot)
+	if err != nil {
+		return nil
+	}
+	found := false
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if _, err := strconv.Atoi(e.Name()); err != nil {
+			continue
+		}
+		raw, err := os.ReadFile(procRoot + "/" + e.Name() + "/comm")
+		if err != nil {
+			continue
+		}
+		if strings.TrimSpace(string(raw)) == "xray" {
+			found = true
+			break
+		}
+	}
+	return &found
 }
 
 // conntrackCount читает счётчик conntrack; недоступен (не linux, нет модуля) — null.

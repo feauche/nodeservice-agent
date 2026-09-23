@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -58,5 +59,29 @@ func TestCollectSmoke(t *testing.T) {
 	}
 	if m2.CPUPct < 0 || m2.CPUPct > 100 {
 		t.Fatalf("cpuPct вне 0..100: %v", m2.CPUPct)
+	}
+}
+
+func TestXrayRunning(t *testing.T) {
+	root := t.TempDir()
+	mk := func(pid, comm string) {
+		if err := os.MkdirAll(root+"/"+pid, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(root+"/"+pid+"/comm", []byte(comm+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("1", "systemd")
+	mk("42", "sshd")
+	if got := xrayRunning(root); got == nil || *got {
+		t.Fatalf("без xray ожидали false, получили %v", got)
+	}
+	mk("777", "xray")
+	if got := xrayRunning(root); got == nil || !*got {
+		t.Fatalf("с xray ожидали true, получили %v", got)
+	}
+	if got := xrayRunning(root + "/nope"); got != nil {
+		t.Fatalf("нет /proc — ожидали nil, получили %v", got)
 	}
 }

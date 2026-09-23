@@ -97,6 +97,8 @@ type Metrics struct {
 	NetTxPps       float64 `json:"netTxPps"`
 	ConntrackCount *int64  `json:"conntrackCount"`
 	UptimeSec      int64   `json:"uptimeSec"`
+	// XrayRunning — есть ли процесс xray (нода работает); nil — не удалось посмотреть.
+	XrayRunning *bool `json:"xrayRunning"`
 }
 
 /* ---------- панель → агент ---------- */
