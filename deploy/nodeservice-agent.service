@@ -1,8 +1,6 @@
-# Агент NodeService: исходящий WebSocket к панели, входящих портов нет.
-# Первый запуск читает токен из /etc/nodeservice-agent.env; после привязки токен мёртв
-# (одноразовый), файл можно удалить.
+# Агент NodeService: защищённый HTTPS-канал для запросов панели.
 [Unit]
-Description=NodeService agent (метрики и heartbeat ноды)
+Description=NodeService agent (метрики и heartbeat сервера)
 Documentation=https://github.com/LumaxDev/nodeservice-agent
 After=network-online.target
 Wants=network-online.target

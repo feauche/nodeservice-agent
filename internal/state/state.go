@@ -25,6 +25,16 @@ type State struct {
 	WsURLs []string `json:"wsUrls,omitempty"`
 	// PrivKeyB64 — base64 seed (32 байта) приватного ключа ed25519.
 	PrivKeyB64 string `json:"privateKey"`
+	// Pull — входящий HTTPS-канал: панель сама забирает heartbeat и метрики.
+	Pull *PullState `json:"pull,omitempty"`
+}
+
+// PullState хранится только в state.json с правами 0600. AccessKey уникален для одного сервера.
+type PullState struct {
+	Port       int    `json:"port"`
+	AccessKey  string `json:"accessKey"`
+	ServerID   string `json:"serverId"`
+	ServerName string `json:"serverName"`
 }
 
 // Key восстанавливает приватный ключ из seed.
@@ -57,10 +67,17 @@ func Load(dir string) (*State, error) {
 	if st.WsURL == "" && len(st.WsURLs) > 0 {
 		st.WsURL = st.WsURLs[0]
 	}
-	if st.ServerID == "" || st.WsURL == "" || st.PrivKeyB64 == "" {
+	if st.Pull == nil && (st.ServerID == "" || st.WsURL == "" || st.PrivKeyB64 == "") {
 		return nil, errors.New("state.json неполный — удали его и привяжи агента заново токеном")
 	}
-	st.SetEndpoints(append(st.WsURLs, st.WsURL))
+	if st.Pull != nil {
+		if st.Pull.Port < 10000 || st.Pull.Port > 65535 || len(st.Pull.AccessKey) < 32 || st.Pull.ServerID == "" {
+			return nil, errors.New("state.json содержит неполную настройку входящего канала")
+		}
+	}
+	if st.WsURL != "" {
+		st.SetEndpoints(append(st.WsURLs, st.WsURL))
+	}
 	return &st, nil
 }
 
@@ -99,7 +116,9 @@ func (s *State) SetEndpoints(urls []string) {
 
 // Save атомарно пишет состояние (tmp + rename), права 0600.
 func Save(dir string, st *State) error {
-	st.SetEndpoints(append(st.WsURLs, st.WsURL))
+	if st.WsURL != "" {
+		st.SetEndpoints(append(st.WsURLs, st.WsURL))
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}

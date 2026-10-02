@@ -67,6 +67,26 @@ func TestLoadIncomplete(t *testing.T) {
 	}
 }
 
+func TestSaveLoadPullOnly(t *testing.T) {
+	dir := t.TempDir()
+	in := &State{Pull: &PullState{
+		Port:       23456,
+		AccessKey:  "nsa_key-that-is-longer-than-thirty-two-bytes",
+		ServerID:   "0192c000-0000-7000-8000-000000000001",
+		ServerName: "kz-1",
+	}}
+	if err := Save(dir, in); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(out, in) {
+		t.Fatalf("roundtrip: %+v != %+v", out, in)
+	}
+}
+
 func TestLoadMigratesSingleWsURL(t *testing.T) {
 	dir := t.TempDir()
 	seed := base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))

@@ -18,6 +18,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/feauche/nodeservice-agent/internal/enroll"
+	"github.com/feauche/nodeservice-agent/internal/pull"
 	"github.com/feauche/nodeservice-agent/internal/state"
 	"github.com/feauche/nodeservice-agent/internal/transport"
 )
@@ -48,7 +49,13 @@ func newRunCmd() *cobra.Command {
 						"первый запуск: нужны --panel-url и --token (или NODESERVICE_PANEL_URL / NODESERVICE_TOKEN)",
 					)
 				}
-				st, err = enrollFirstRun(cmd.Context(), log, panelURL, token, stateDir)
+				st, err = enrollFirstRun(
+					cmd.Context(),
+					log,
+					enrollmentPanelURLs(panelURL, os.Getenv("NODESERVICE_PANEL_URLS")),
+					token,
+					stateDir,
+				)
 				if err != nil {
 					return err
 				}
@@ -58,6 +65,9 @@ func newRunCmd() *cobra.Command {
 
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
+			if st.Pull != nil {
+				return pull.Run(ctx, pull.Config{State: st.Pull, StateDir: stateDir, Version: version, Log: log})
+			}
 
 			if raw := strings.TrimSpace(os.Getenv("NODESERVICE_WS_URLS")); raw != "" {
 				extra := strings.Split(raw, ",")
@@ -94,7 +104,8 @@ func newRunCmd() *cobra.Command {
 func enrollFirstRun(
 	ctx context.Context,
 	log zerolog.Logger,
-	panelURL, token, stateDir string,
+	panelURLs []string,
+	token, stateDir string,
 ) (*state.State, error) {
 	seed := make([]byte, ed25519.SeedSize)
 	if _, err := rand.Read(seed); err != nil {
@@ -102,7 +113,13 @@ func enrollFirstRun(
 	}
 	key := ed25519.NewKeyFromSeed(seed)
 
-	res, err := enroll.Enroll(ctx, panelURL, token, key.Public().(ed25519.PublicKey), version)
+	res, panelURL, err := enroll.FirstAvailable(
+		ctx,
+		panelURLs,
+		token,
+		key.Public().(ed25519.PublicKey),
+		version,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -119,6 +136,26 @@ func enrollFirstRun(
 	}
 	log.Info().Str("сервер", res.ServerName).Msg("агент привязан к панели, ключ зафиксирован")
 	return st, nil
+}
+
+// enrollmentPanelURLs оставляет основной адрес первым и добавляет независимые входы, переданные
+// установщиком. Повторы и пустые значения не заставляют ждать лишний сетевой таймаут.
+func enrollmentPanelURLs(primary, raw string) []string {
+	values := append([]string{primary}, strings.Split(raw, ",")...)
+	seen := make(map[string]struct{}, len(values))
+	urls := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimRight(strings.TrimSpace(value), "/")
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		urls = append(urls, value)
+	}
+	return urls
 }
 
 func newLogger() zerolog.Logger {

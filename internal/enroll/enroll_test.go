@@ -63,3 +63,29 @@ func TestEnrollRejected(t *testing.T) {
 		t.Fatalf("текст ошибки: %q", err.Error())
 	}
 }
+
+func TestFirstAvailableUsesFallback(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(nil)
+	working := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"serverId":   "0192c000-0000-7000-8000-000000000001",
+			"serverName": "fallback-node",
+			"wsUrl":      "wss://backup.test/api/agent/v1/ws",
+		})
+	}))
+	defer working.Close()
+
+	res, panelURL, err := FirstAvailable(
+		t.Context(),
+		[]string{"http://127.0.0.1:1", working.URL},
+		"nse_test-token",
+		pub,
+		"v0.7.1",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if panelURL != working.URL || res.ServerName != "fallback-node" {
+		t.Fatalf("panel = %q, res = %+v", panelURL, res)
+	}
+}

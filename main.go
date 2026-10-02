@@ -1,5 +1,5 @@
-// Агент NodeService: один статический бинарь, исходящий WebSocket к панели,
-// heartbeat и метрики ноды. Входящих портов не открывает.
+// Агент NodeService: метрики и heartbeat ноды. Новые установки обслуживаются
+// входящим HTTPS-каналом, который опрашивает панель; старый WebSocket совместим.
 package main
 
 import (
@@ -20,9 +20,9 @@ func main() {
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:          "nodeservice-agent",
-		Short:        "Агент NodeService: heartbeat и метрики ноды по исходящему WebSocket",
+		Short:        "Агент NodeService: heartbeat и метрики ноды",
 		SilenceUsage: true,
 	}
-	root.AddCommand(newRunCmd(), newVersionCmd())
+	root.AddCommand(newRunCmd(), newVersionCmd(), newConfigurePullCmd())
 	return root
 }

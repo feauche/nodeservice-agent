@@ -114,3 +114,29 @@ func Enroll(
 	}
 	return &out, nil
 }
+
+// FirstAvailable выполняет первичную привязку через первый доступный вход. Резервные маршруты нужны
+// именно здесь: до успешного enroll у агента ещё нет state.json и он не может получить их от панели.
+func FirstAvailable(
+	ctx context.Context,
+	panelURLs []string,
+	token string,
+	pub ed25519.PublicKey,
+	version string,
+) (*Result, string, error) {
+	if len(panelURLs) == 0 {
+		return nil, "", fmt.Errorf("не задан ни один адрес панели")
+	}
+	errorsByURL := make([]string, 0, len(panelURLs))
+	for _, panelURL := range panelURLs {
+		res, err := Enroll(ctx, panelURL, token, pub, version)
+		if err == nil {
+			return res, panelURL, nil
+		}
+		if ctx.Err() != nil {
+			return nil, "", ctx.Err()
+		}
+		errorsByURL = append(errorsByURL, fmt.Sprintf("%s: %v", panelURL, err))
+	}
+	return nil, "", fmt.Errorf("регистрация не прошла ни через один вход: %s", strings.Join(errorsByURL, "; "))
+}
