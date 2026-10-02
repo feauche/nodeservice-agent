@@ -100,15 +100,31 @@ func (c *Client) session(ctx context.Context, key ed25519.PrivateKey) (establish
 		Int("метрики_с", welcome.MetricsSeconds).
 		Msg("агент на связи с панелью")
 
-	sctx, scancel := context.WithCancel(ctx)
-	defer scancel()
-	sendErr := make(chan error, 1)
-	go func() { sendErr <- c.sendLoop(sctx, conn, welcome) }()
+	// Смена IP или маршрута часто первой ломает запись heartbeat, пока чтение из старого TCP-сокета ещё
+	// висит. Ждать только readLoop нельзя: агент оставался в старом соединении до перезапуска службы.
+	// Любая из двух сторон завершила работу — отменяем вторую и сразу начинаем новый сеанс.
+	sessionErr := firstLoopError(
+		ctx,
+		func(loopCtx context.Context) error { return c.readLoop(loopCtx, conn) },
+		func(loopCtx context.Context) error { return c.sendLoop(loopCtx, conn, welcome) },
+	)
+	return true, sessionErr
+}
 
-	readErr := c.readLoop(sctx, conn)
-	scancel()
-	<-sendErr
-	return true, readErr
+// firstLoopError запускает чтение и отправку вместе; первая ошибка отменяет соседний цикл.
+func firstLoopError(
+	parent context.Context,
+	readLoop func(context.Context) error,
+	sendLoop func(context.Context) error,
+) error {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	errs := make(chan error, 2)
+	go func() { errs <- readLoop(ctx) }()
+	go func() { errs <- sendLoop(ctx) }()
+	err := <-errs
+	cancel()
+	return err
 }
 
 // Handshake выполняет hello → challenge → auth → welcome. Вынесен отдельно для тестов.
