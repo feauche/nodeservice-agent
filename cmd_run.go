@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -58,7 +59,21 @@ func newRunCmd() *cobra.Command {
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
-			client := transport.New(transport.Config{State: st, Version: version, Log: log})
+			if raw := strings.TrimSpace(os.Getenv("NODESERVICE_WS_URLS")); raw != "" {
+				extra := strings.Split(raw, ",")
+				current := st.Endpoints()
+				// Текущий первый адрес оставляем первым, чтобы обычный рестарт не менял маршрут. Новые адреса
+				// из обновления через SSH ставим раньше прежних резервов: даже полный старый список не должен
+				// вытеснить свежий рабочий вход из ограничения в пять адресов.
+				merged := append([]string(nil), current[:1]...)
+				merged = append(merged, extra...)
+				merged = append(merged, current[1:]...)
+				st.SetEndpoints(merged)
+				if err := state.Save(stateDir, st); err != nil {
+					log.Warn().Err(err).Msg("не удалось сохранить адреса связи")
+				}
+			}
+			client := transport.New(transport.Config{State: st, StateDir: stateDir, Version: version, Log: log})
 			if err := client.Run(ctx); err != nil {
 				log.Error().Err(err).Msg("агент остановлен")
 				return err
@@ -96,6 +111,7 @@ func enrollFirstRun(
 		ServerID:   res.ServerID,
 		ServerName: res.ServerName,
 		WsURL:      res.WsURL,
+		WsURLs:     res.Endpoints(),
 		PrivKeyB64: base64.StdEncoding.EncodeToString(seed),
 	}
 	if err := state.Save(stateDir, st); err != nil {

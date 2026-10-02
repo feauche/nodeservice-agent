@@ -43,6 +43,10 @@ func fakePanel(t *testing.T, acceptAuth bool) *httptest.Server {
 			t.Errorf("hello payload: %+v, %v", h, err)
 			return
 		}
+		if h.Route != "wss://agents.example.test/api/agent/v1/ws" {
+			t.Errorf("hello route: %q", h.Route)
+			return
+		}
 		pub, _ := base64.StdEncoding.DecodeString(h.Pubkey)
 
 		nonce := make([]byte, 32)
@@ -85,7 +89,7 @@ func TestHandshakeOK(t *testing.T) {
 	conn := dial(t, srv)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	w, err := Handshake(t.Context(), conn, testServerID, key, "v-test")
+	w, err := Handshake(t.Context(), conn, testServerID, key, "v-test", "wss://agents.example.test/api/agent/v1/ws")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +106,7 @@ func TestHandshakeAuthRejected(t *testing.T) {
 	conn := dial(t, srv)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	_, err := Handshake(t.Context(), conn, testServerID, key, "v-test")
+	_, err := Handshake(t.Context(), conn, testServerID, key, "v-test", "wss://agents.example.test/api/agent/v1/ws")
 	if !errors.Is(err, ErrAuthRejected) {
 		t.Fatalf("ожидал ErrAuthRejected, получил %v", err)
 	}

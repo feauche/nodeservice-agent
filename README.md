@@ -2,7 +2,8 @@
 
 Агент NodeService для ноды: один статический Go-бинарь, который сам ходит к панели
 по исходящему WebSocket (входящих портов не открывает), шлёт heartbeat и метрики
-(CPU, память, диск, сеть bps/pps, conntrack, load, uptime).
+(CPU, память, диск, сеть bps/pps, conntrack, load, uptime). Если сеть или прокси не
+пропускает WebSocket, агент продолжает работу обычными подписанными HTTPS-запросами.
 
 **Отдельный git-репозиторий** со своими релизами (GitHub Releases:
 `nodeservice-agent_linux_amd64`, `nodeservice-agent_linux_arm64`, `checksums.txt`).
@@ -29,6 +30,11 @@ curl -fsSL https://raw.githubusercontent.com/feauche/nodeservice-agent/main/scri
 переподключается с прежним ключом. Удалять `state.json` и переустанавливать
 агент для этого не нужно.
 
+Панель передаёт до пяти независимых адресов. Агент сохраняет список в `state.json`,
+перебирает маршруты при отказе и раз в минуту пытается вернуться с запасного HTTPS
+на постоянный WebSocket. При обновлении через панель список также записывается в
+`NODESERVICE_WS_URLS`, поэтому отключённый агент получает новые маршруты через SSH.
+
 Перепривязка к другой панели/серверу: `rm /var/lib/nodeservice-agent/state.json`,
 выпустить в панели новый токен и перезапустить агента с ним.
 
@@ -39,6 +45,10 @@ curl -fsSL https://raw.githubusercontent.com/feauche/nodeservice-agent/main/scri
 своим ключом ed25519 (ключ пиннится панелью при энроллменте, TOFU). Источник
 правды по схемам — `panel/packages/shared/src/agent-protocol.ts` монорепо панели.
 Частоты heartbeat и метрик агенту сообщает панель (настройки → «Автопроверки»).
+
+Запасной `POST /api/agent/v1/pulse` передаёт heartbeat и метрики внутри payload,
+который вместе с ID и временем подписан тем же ed25519-ключом. Панель принимает
+запрос только в коротком временном окне и не принимает повторный ID.
 
 ## Разработка
 
@@ -57,7 +67,7 @@ internal/proto      — конверт и сообщения протокола 
 internal/state      — state.json: ключ и привязка (0600, атомарная запись)
 internal/enroll     — HTTP-энроллмент по одноразовому токену
 internal/metrics    — gopsutil/v4, сетевые скорости дельтами между тиками
-internal/transport  — WebSocket-клиент: рукопожатие, heartbeat, метрики, backoff
+internal/transport  — WebSocket + HTTPS fallback, маршруты, heartbeat, метрики, backoff
 deploy/             — systemd-юнит с закалкой
 scripts/install.sh  — установка одной командой
 ```

@@ -1,7 +1,8 @@
 // Package transport — исходящее WebSocket-соединение с панелью:
 // рукопожатие hello → challenge → auth → welcome, затем heartbeat и метрики.
 // Обрыв связи лечится переподключением с экспоненциальным backoff (cap 60 c + jitter);
-// отказ аутентификации — фатален: без новой привязки переподключаться бессмысленно.
+// отказ одного маршрута, включая аутентификацию, не останавливает службу: конфигурацию панели могут
+// восстановить, а другой маршрут уже может вести к исправному экземпляру.
 package transport
 
 import (
@@ -10,6 +11,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
@@ -27,9 +29,10 @@ var ErrAuthRejected = errors.New("панель отвергла агента")
 
 // Config — всё, что нужно клиенту.
 type Config struct {
-	State   *state.State
-	Version string
-	Log     zerolog.Logger
+	State    *state.State
+	StateDir string
+	Version  string
+	Log      zerolog.Logger
 }
 
 // Client держит цикл подключений.
@@ -42,7 +45,7 @@ func New(cfg Config) *Client {
 	return &Client{cfg: cfg, col: metrics.NewCollector()}
 }
 
-// Run крутит подключения до отмены контекста или фатального отказа аутентификации.
+// Run крутит WebSocket и запасные HTTPS-подключения до отмены контекста.
 func (c *Client) Run(ctx context.Context) error {
 	key, err := c.cfg.State.Key()
 	if err != nil {
@@ -55,22 +58,48 @@ func (c *Client) Run(ctx context.Context) error {
 	bo.RandomizationFactor = 0.4
 
 	for {
-		established, err := c.session(ctx, key)
-		if ctx.Err() != nil {
-			return nil
+		var lastErr error
+		endpoints := c.cfg.State.Endpoints()
+		for _, endpoint := range endpoints {
+			established, sessionErr := c.session(ctx, key, endpoint)
+			if ctx.Err() != nil {
+				return nil
+			}
+			if established {
+				bo.Reset()
+			}
+			lastErr = sessionErr
+			c.cfg.Log.Warn().Err(sessionErr).Str("маршрут", endpoint).
+				Msg("WebSocket недоступен — пробую следующий маршрут")
 		}
-		if errors.Is(err, ErrAuthRejected) {
-			return err
+
+		// Обычный HTTPS проходит через прокси, которые запрещают WebSocket Upgrade. Проверяем каждый
+		// маршрут и, если нашли рабочий, держим heartbeat и метрики до следующей попытки WebSocket.
+		for _, endpoint := range endpoints {
+			established, fallbackErr := c.fallbackSession(ctx, key, endpoint)
+			if ctx.Err() != nil {
+				return nil
+			}
+			if established {
+				bo.Reset()
+			}
+			lastErr = fallbackErr
+			if errors.Is(fallbackErr, errRetryWebSocket) {
+				lastErr = nil
+				break
+			}
+			c.cfg.Log.Warn().Err(fallbackErr).Str("маршрут", endpoint).
+				Msg("запасной HTTPS недоступен — пробую следующий маршрут")
 		}
-		if established {
-			bo.Reset()
+		if lastErr == nil {
+			continue
 		}
 		wait := bo.NextBackOff()
 		if wait <= 0 {
 			wait = time.Second
 		}
-		c.cfg.Log.Warn().Err(err).Str("повтор_через", wait.Round(time.Second).String()).
-			Msg("связь с панелью потеряна — переподключаюсь")
+		c.cfg.Log.Warn().Err(lastErr).Str("повтор_через", wait.Round(time.Second).String()).
+			Msg("все маршруты к панели недоступны — повторяю")
 		select {
 		case <-ctx.Done():
 			return nil
@@ -80,9 +109,13 @@ func (c *Client) Run(ctx context.Context) error {
 }
 
 // session — одно подключение: рукопожатие и рабочие циклы до обрыва.
-func (c *Client) session(ctx context.Context, key ed25519.PrivateKey) (established bool, err error) {
-	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	conn, _, err := websocket.Dial(dialCtx, c.cfg.State.WsURL, nil)
+func (c *Client) session(
+	ctx context.Context,
+	key ed25519.PrivateKey,
+	endpoint string,
+) (established bool, err error) {
+	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	conn, _, err := websocket.Dial(dialCtx, endpoint, nil)
 	cancel()
 	if err != nil {
 		return false, fmt.Errorf("подключение: %w", err)
@@ -90,15 +123,18 @@ func (c *Client) session(ctx context.Context, key ed25519.PrivateKey) (establish
 	defer conn.Close(websocket.StatusNormalClosure, "завершение")
 	conn.SetReadLimit(1 << 20)
 
-	welcome, err := Handshake(ctx, conn, c.cfg.State.ServerID, key, c.cfg.Version)
+	welcome, err := Handshake(ctx, conn, c.cfg.State.ServerID, key, c.cfg.Version, endpoint)
 	if err != nil {
 		return false, err
 	}
 	c.cfg.Log.Info().
 		Str("сервер", welcome.ServerName).
+		Str("маршрут", endpoint).
+		Str("транспорт", "WebSocket").
 		Int("heartbeat_с", welcome.HeartbeatSeconds).
 		Int("метрики_с", welcome.MetricsSeconds).
 		Msg("агент на связи с панелью")
+	c.applyWelcome(welcome)
 
 	// Смена IP или маршрута часто первой ломает запись heartbeat, пока чтение из старого TCP-сокета ещё
 	// висит. Ждать только readLoop нельзя: агент оставался в старом соединении до перезапуска службы.
@@ -109,6 +145,22 @@ func (c *Client) session(ctx context.Context, key ed25519.PrivateKey) (establish
 		func(loopCtx context.Context) error { return c.sendLoop(loopCtx, conn, welcome) },
 	)
 	return true, sessionErr
+}
+
+/** Сохранить новый список маршрутов, присланный панелью, не меняя ключ и привязку. */
+func (c *Client) applyWelcome(welcome *proto.Welcome) {
+	if len(welcome.WsURLs) == 0 || slices.Equal(c.cfg.State.Endpoints(), welcome.WsURLs) {
+		return
+	}
+	c.cfg.State.SetEndpoints(welcome.WsURLs)
+	if c.cfg.StateDir == "" {
+		return
+	}
+	if err := state.Save(c.cfg.StateDir, c.cfg.State); err != nil {
+		c.cfg.Log.Warn().Err(err).Msg("не удалось сохранить новый список маршрутов")
+		return
+	}
+	c.cfg.Log.Info().Int("маршрутов", len(c.cfg.State.Endpoints())).Msg("список маршрутов к панели обновлён")
 }
 
 // firstLoopError запускает чтение и отправку вместе; первая ошибка отменяет соседний цикл.
@@ -134,6 +186,7 @@ func Handshake(
 	serverID string,
 	key ed25519.PrivateKey,
 	version string,
+	route string,
 ) (*proto.Welcome, error) {
 	hctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -143,6 +196,7 @@ func Handshake(
 		ServerID: serverID,
 		Pubkey:   base64.StdEncoding.EncodeToString(pub),
 		Version:  version,
+		Route:    route,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("hello: %w", err)

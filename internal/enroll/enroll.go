@@ -17,9 +17,29 @@ import (
 
 // Result — ответ панели: к какому серверу привязан агент и куда подключаться.
 type Result struct {
-	ServerID   string `json:"serverId"`
-	ServerName string `json:"serverName"`
-	WsURL      string `json:"wsUrl"`
+	ServerID   string   `json:"serverId"`
+	ServerName string   `json:"serverName"`
+	WsURL      string   `json:"wsUrl"`
+	WsURLs     []string `json:"wsUrls,omitempty"`
+}
+
+// Endpoints поддерживает и новый список, и один адрес от старой панели.
+func (r *Result) Endpoints() []string {
+	urls := append([]string(nil), r.WsURLs...)
+	urls = append(urls, r.WsURL)
+	seen := make(map[string]struct{}, len(urls))
+	out := make([]string, 0, len(urls))
+	for _, value := range urls {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 type request struct {

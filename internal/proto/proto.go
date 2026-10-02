@@ -76,6 +76,7 @@ type Hello struct {
 	ServerID string `json:"serverId"`
 	Pubkey   string `json:"pubkey"`
 	Version  string `json:"version"`
+	Route    string `json:"route,omitempty"`
 }
 
 // Auth — подпись nonce из challenge.
@@ -110,9 +111,39 @@ type Challenge struct {
 
 // Welcome — успешная аутентификация и параметры работы из настроек «Автопроверки».
 type Welcome struct {
-	ServerName       string `json:"serverName"`
-	HeartbeatSeconds int    `json:"heartbeatSeconds"`
-	MetricsSeconds   int    `json:"metricsSeconds"`
+	ServerName       string   `json:"serverName"`
+	HeartbeatSeconds int      `json:"heartbeatSeconds"`
+	MetricsSeconds   int      `json:"metricsSeconds"`
+	WsURLs           []string `json:"wsUrls,omitempty"`
+}
+
+// PulsePayload — данные запасного HTTPS-запроса. Пустой payload означает обычный heartbeat.
+type PulsePayload struct {
+	Metrics *Metrics `json:"metrics,omitempty"`
+	Route   string   `json:"route,omitempty"`
+}
+
+// PulseRequest — подписанный запрос POST /api/agent/v1/pulse.
+type PulseRequest struct {
+	V         int    `json:"v"`
+	ServerID  string `json:"serverId"`
+	Version   string `json:"version"`
+	ID        string `json:"id"`
+	TS        string `json:"ts"`
+	Payload   string `json:"payload"`
+	Signature string `json:"signature"`
+}
+
+// PulseSigningText зеркалит agentPulseSigningText в shared-контракте панели.
+func PulseSigningText(req PulseRequest) string {
+	return fmt.Sprintf(
+		"nodeservice-agent-pulse-v1\n%s\n%s\n%s\n%s\n%s",
+		req.ServerID,
+		req.Version,
+		req.ID,
+		req.TS,
+		req.Payload,
+	)
 }
 
 // ErrorPayload — ошибка протокола или аутентификации от панели.

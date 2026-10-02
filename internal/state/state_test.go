@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -44,7 +45,7 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if *out != *in {
+	if !reflect.DeepEqual(*out, *in) {
 		t.Fatalf("roundtrip: %+v != %+v", out, in)
 	}
 	key, err := out.Key()
@@ -63,5 +64,21 @@ func TestLoadIncomplete(t *testing.T) {
 	}
 	if _, err := Load(dir); err == nil {
 		t.Fatal("ожидалась ошибка про неполное состояние")
+	}
+}
+
+func TestLoadMigratesSingleWsURL(t *testing.T) {
+	dir := t.TempDir()
+	seed := base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))
+	raw := []byte(`{"serverId":"s1","wsUrl":"wss://old.test/api/agent/v1/ws","privateKey":"` + seed + `"}`)
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := st.Endpoints(); len(got) != 1 || got[0] != st.WsURL {
+		t.Fatalf("старый wsUrl не перенесён в список: %v", got)
 	}
 }
