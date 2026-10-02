@@ -3,16 +3,23 @@
 package main
 
 import (
+	"errors"
 	"os"
 
+	"github.com/feauche/nodeservice-agent/internal/transport"
 	"github.com/spf13/cobra"
 )
+
+const authRejectedExitCode = 78
 
 // version подменяется при сборке: -ldflags "-X main.version=v0.5.0".
 var version = "dev"
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
+		if errors.Is(err, transport.ErrAuthRejected) {
+			os.Exit(authRejectedExitCode)
+		}
 		os.Exit(1)
 	}
 }

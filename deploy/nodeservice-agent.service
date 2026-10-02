@@ -14,6 +14,7 @@ Environment=NODESERVICE_STATE_DIR=/var/lib/nodeservice-agent
 ExecStart=/usr/local/bin/nodeservice-agent run
 Restart=always
 RestartSec=5
+RestartPreventExitStatus=78
 
 # --- закалка ---
 NoNewPrivileges=yes

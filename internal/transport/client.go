@@ -60,7 +60,9 @@ func (c *Client) Run(ctx context.Context) error {
 	for {
 		var lastErr error
 		endpoints := c.cfg.State.Endpoints()
+		attempts, rejected := 0, 0
 		for _, endpoint := range endpoints {
+			attempts++
 			established, sessionErr := c.session(ctx, key, endpoint)
 			if ctx.Err() != nil {
 				return nil
@@ -69,6 +71,9 @@ func (c *Client) Run(ctx context.Context) error {
 				bo.Reset()
 			}
 			lastErr = sessionErr
+			if errors.Is(sessionErr, ErrAuthRejected) {
+				rejected++
+			}
 			c.cfg.Log.Warn().Err(sessionErr).Str("маршрут", endpoint).
 				Msg("WebSocket недоступен — пробую следующий маршрут")
 		}
@@ -76,6 +81,7 @@ func (c *Client) Run(ctx context.Context) error {
 		// Обычный HTTPS проходит через прокси, которые запрещают WebSocket Upgrade. Проверяем каждый
 		// маршрут и, если нашли рабочий, держим heartbeat и метрики до следующей попытки WebSocket.
 		for _, endpoint := range endpoints {
+			attempts++
 			established, fallbackErr := c.fallbackSession(ctx, key, endpoint)
 			if ctx.Err() != nil {
 				return nil
@@ -84,6 +90,9 @@ func (c *Client) Run(ctx context.Context) error {
 				bo.Reset()
 			}
 			lastErr = fallbackErr
+			if errors.Is(fallbackErr, ErrAuthRejected) {
+				rejected++
+			}
 			if errors.Is(fallbackErr, errRetryWebSocket) {
 				lastErr = nil
 				break
@@ -93,6 +102,12 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 		if lastErr == nil {
 			continue
+		}
+		// Все независимые входы и оба транспорта получили окончательный отказ. Это не обрыв сети:
+		// сервер удалён из панели либо ключ отозван. Завершаемся специальной ошибкой, чтобы systemd
+		// не создавал бесконечный цикл и тысячи одинаковых записей в Журнале.
+		if attempts > 0 && rejected == attempts {
+			return ErrAuthRejected
 		}
 		wait := bo.NextBackOff()
 		if wait <= 0 {

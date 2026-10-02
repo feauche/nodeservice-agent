@@ -2,9 +2,22 @@ package transport
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
+	"github.com/rs/zerolog"
+
+	"github.com/feauche/nodeservice-agent/internal/proto"
+	"github.com/feauche/nodeservice-agent/internal/state"
 )
 
 func TestFirstLoopErrorSendFailureCancelsBlockedRead(t *testing.T) {
@@ -32,5 +45,48 @@ func TestFirstLoopErrorSendFailureCancelsBlockedRead(t *testing.T) {
 	case <-readStopped:
 	case <-time.After(time.Second):
 		t.Fatal("ошибка отправки не остановила зависшее чтение")
+	}
+}
+
+func TestRunStopsWhenEveryRouteRejectsDeletedServer(t *testing.T) {
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/agent/v1/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, acceptErr := websocket.Accept(w, r, nil)
+		if acceptErr != nil {
+			t.Error(acceptErr)
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+		var hello proto.Envelope
+		if readErr := wsjson.Read(r.Context(), conn, &hello); readErr != nil {
+			t.Error(readErr)
+			return
+		}
+		env, _ := proto.New(proto.MsgError, proto.ErrorPayload{
+			Code:    proto.ErrCodeUnknownServer,
+			Message: "сервер удалён",
+		})
+		_ = wsjson.Write(r.Context(), conn, env)
+	})
+	mux.HandleFunc("/api/agent/v1/pulse", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unknown server", http.StatusUnauthorized)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	endpoint := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/agent/v1/ws"
+	st := &state.State{
+		ServerID:   testServerID,
+		WsURL:      endpoint,
+		WsURLs:     []string{endpoint},
+		PrivKeyB64: base64.StdEncoding.EncodeToString(key.Seed()),
+	}
+
+	err = New(Config{State: st, Version: "v-test", Log: zerolog.Nop()}).Run(t.Context())
+	if !errors.Is(err, ErrAuthRejected) {
+		t.Fatalf("удалённый сервер должен остановить агент, получено: %v", err)
 	}
 }
