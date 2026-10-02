@@ -24,6 +24,7 @@ import (
 )
 
 const conntrackPath = "/proc/sys/net/netfilter/nf_conntrack_count"
+const routePath = "/proc/net/route"
 
 // NetSnap — снимок суммарных сетевых счётчиков в момент времени.
 type NetSnap struct {
@@ -97,15 +98,17 @@ func (c *Collector) Collect(ctx context.Context) (*proto.Metrics, error) {
 		m.UptimeSec = int64(up)
 	}
 
-	if counters, err := net.IOCountersWithContext(ctx, false); err != nil {
+	if counters, err := net.IOCountersWithContext(ctx, true); err != nil {
 		probs = append(probs, fmt.Errorf("сеть: %w", err))
 	} else if len(counters) > 0 {
+		routes, _ := os.ReadFile(routePath)
+		counter := externalCounter(counters, string(routes))
 		cur := NetSnap{
 			At:        time.Now(),
-			RxBytes:   counters[0].BytesRecv,
-			TxBytes:   counters[0].BytesSent,
-			RxPackets: counters[0].PacketsRecv,
-			TxPackets: counters[0].PacketsSent,
+			RxBytes:   counter.BytesRecv,
+			TxBytes:   counter.BytesSent,
+			RxPackets: counter.PacketsRecv,
+			TxPackets: counter.PacketsSent,
 		}
 		c.mu.Lock()
 		if c.prev != nil {
@@ -116,6 +119,66 @@ func (c *Collector) Collect(ctx context.Context) (*proto.Metrics, error) {
 	}
 
 	return m, errors.Join(probs...)
+}
+
+// externalCounter считает трафик физических входов сервера один раз. Сначала берём интерфейсы,
+// через которые ядро держит default route: это надёжно для eth/enp, bond и сетевых мостов провайдера.
+// Если таблица маршрутов недоступна, исключаем заведомо внутренние loopback, Docker/veth и туннели.
+func externalCounter(counters []net.IOCountersStat, routes string) net.IOCountersStat {
+	defaults := defaultInterfaces(routes)
+	selected := make([]net.IOCountersStat, 0, len(counters))
+	if len(defaults) > 0 {
+		for _, counter := range counters {
+			// Full-tunnel VPN/WARP can also install a default route. Counting it together with the
+			// physical NIC duplicates the same bytes; counting only it describes the tunnel, not the VPS.
+			if defaults[counter.Name] && !virtualInterface(counter.Name) {
+				selected = append(selected, counter)
+			}
+		}
+	}
+	if len(selected) == 0 {
+		for _, counter := range counters {
+			if !virtualInterface(counter.Name) {
+				selected = append(selected, counter)
+			}
+		}
+	}
+	var total net.IOCountersStat
+	for _, counter := range selected {
+		total.BytesRecv += counter.BytesRecv
+		total.BytesSent += counter.BytesSent
+		total.PacketsRecv += counter.PacketsRecv
+		total.PacketsSent += counter.PacketsSent
+	}
+	return total
+}
+
+func defaultInterfaces(routes string) map[string]bool {
+	out := make(map[string]bool)
+	for n, line := range strings.Split(routes, "\n") {
+		fields := strings.Fields(line)
+		if n == 0 || len(fields) < 4 || fields[1] != "00000000" {
+			continue
+		}
+		flags, err := strconv.ParseUint(fields[3], 16, 64)
+		if err == nil && flags&1 != 0 { // RTF_UP
+			out[fields[0]] = true
+		}
+	}
+	return out
+}
+
+func virtualInterface(name string) bool {
+	n := strings.ToLower(name)
+	for _, prefix := range []string{
+		"lo", "docker", "veth", "br-", "virbr", "cni", "flannel", "kube", "tun", "tap",
+		"wg", "tailscale", "ifb", "dummy", "ip6tnl", "sit", "gre", "gretap",
+	} {
+		if n == prefix || strings.HasPrefix(n, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // xrayRunning ищет процесс xray по /proc — так видно и процесс внутри контейнера ноды

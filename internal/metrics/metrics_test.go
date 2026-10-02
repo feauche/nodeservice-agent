@@ -4,7 +4,48 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	psnet "github.com/shirou/gopsutil/v4/net"
 )
+
+func TestExternalCounterUsesDefaultRouteWithoutVirtualDoubleCount(t *testing.T) {
+	counters := []psnet.IOCountersStat{
+		{Name: "eth0", BytesRecv: 100, BytesSent: 200, PacketsRecv: 10, PacketsSent: 20},
+		{Name: "docker0", BytesRecv: 90, BytesSent: 80, PacketsRecv: 9, PacketsSent: 8},
+		{Name: "veth123", BytesRecv: 70, BytesSent: 60, PacketsRecv: 7, PacketsSent: 6},
+		{Name: "lo", BytesRecv: 50, BytesSent: 50, PacketsRecv: 5, PacketsSent: 5},
+	}
+	routes := "Iface Destination Gateway Flags RefCnt Use Metric Mask\neth0 00000000 01010101 0003 0 0 100 00000000\n"
+	got := externalCounter(counters, routes)
+	if got.BytesRecv != 100 || got.BytesSent != 200 || got.PacketsRecv != 10 || got.PacketsSent != 20 {
+		t.Fatalf("externalCounter() = %+v, want only eth0", got)
+	}
+}
+
+func TestExternalCounterFallbackExcludesInternalInterfaces(t *testing.T) {
+	counters := []psnet.IOCountersStat{
+		{Name: "ens3", BytesRecv: 100, BytesSent: 200},
+		{Name: "eth1", BytesRecv: 30, BytesSent: 40},
+		{Name: "docker0", BytesRecv: 900, BytesSent: 800},
+		{Name: "wg0", BytesRecv: 700, BytesSent: 600},
+	}
+	got := externalCounter(counters, "")
+	if got.BytesRecv != 130 || got.BytesSent != 240 {
+		t.Fatalf("externalCounter() = %+v, want physical interfaces once", got)
+	}
+}
+
+func TestExternalCounterIgnoresTunnelDefaultRoute(t *testing.T) {
+	counters := []psnet.IOCountersStat{
+		{Name: "ens3", BytesRecv: 100, BytesSent: 200},
+		{Name: "wg0", BytesRecv: 90, BytesSent: 180},
+	}
+	routes := "Iface Destination Gateway Flags RefCnt Use Metric Mask\nwg0 00000000 00000000 0001 0 0 10 00000000\n"
+	got := externalCounter(counters, routes)
+	if got.BytesRecv != 100 || got.BytesSent != 200 {
+		t.Fatalf("externalCounter() = %+v, want physical fallback without wg0", got)
+	}
+}
 
 func TestRates(t *testing.T) {
 	t0 := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
