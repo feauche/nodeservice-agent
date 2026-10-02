@@ -66,14 +66,51 @@ fi
 FILE="nodeservice-agent_linux_$ARCH"
 
 TMP="$(mktemp -d)"
-WAS_ACTIVE=0 AGENT_STOPPED=0
+WAS_ACTIVE=0 WAS_ENABLED=0 INSTALL_CHANGED=0 INSTALL_COMMITTED=0
+HAD_BIN=0 HAD_STATE=0 HAD_ENV=0 HAD_UNIT=0
+
+backup_file() {
+  src="$1" name="$2"
+  if [ -e "$src" ]; then
+    cp -a "$src" "$TMP/$name"
+    return 0
+  fi
+  return 1
+}
+
+restore_file() {
+  dst="$1" name="$2" had="$3"
+  if [ "$had" = 1 ]; then
+    cp -a "$TMP/$name" "$dst"
+  else
+    rm -f "$dst"
+  fi
+}
+
 cleanup() {
   rc=$?
-  rm -rf "$TMP"
-  # Сбой обновления не должен оставить прежний работавший агент остановленным.
-  if [ "$rc" -ne 0 ] && [ "$WAS_ACTIVE" = 1 ] && [ "$AGENT_STOPPED" = 1 ]; then
-    systemctl start nodeservice-agent 2>/dev/null || true
+  trap - 0
+  if [ "$rc" -ne 0 ] && [ "$INSTALL_CHANGED" = 1 ] && [ "$INSTALL_COMMITTED" = 0 ]; then
+    say "установка не завершилась — возвращаю прежний агент"
+    systemctl stop nodeservice-agent 2>/dev/null || true
+    restore_file "$BIN_PATH" old-bin "$HAD_BIN"
+    restore_file "$ENV_FILE" old-env "$HAD_ENV"
+    restore_file "$UNIT_PATH" old-unit "$HAD_UNIT"
+    rm -rf "$STATE_DIR"
+    if [ "$HAD_STATE" = 1 ]; then cp -a "$TMP/old-state" "$STATE_DIR"; fi
+    systemctl daemon-reload 2>/dev/null || true
+    if [ "$WAS_ENABLED" = 1 ]; then
+      systemctl enable nodeservice-agent 2>/dev/null || true
+    else
+      systemctl disable nodeservice-agent 2>/dev/null || true
+    fi
+    if [ "$WAS_ACTIVE" = 1 ]; then
+      systemctl start nodeservice-agent 2>/dev/null || true
+    else
+      systemctl stop nodeservice-agent 2>/dev/null || true
+    fi
   fi
+  rm -rf "$TMP"
   exit "$rc"
 }
 trap cleanup EXIT
@@ -85,10 +122,16 @@ curl -fsSL -o "$TMP/checksums.txt" "$BASE/checksums.txt" || fail "не скач�
   || fail "контрольная сумма не сошлась — файл повреждён или подменён"
 ok "контрольная сумма сходится"
 
-# Останавливаем старый агент перед заменой бинаря (обновление поверх).
+# До первой правки сохраняем всю прежнюю установку. При любой следующей ошибке cleanup вернёт её
+# целиком: одного запуска старой службы недостаточно, если бинарь, state.json или unit уже заменены.
+backup_file "$BIN_PATH" old-bin && HAD_BIN=1 || true
+backup_file "$ENV_FILE" old-env && HAD_ENV=1 || true
+backup_file "$UNIT_PATH" old-unit && HAD_UNIT=1 || true
+if [ -d "$STATE_DIR" ]; then cp -a "$STATE_DIR" "$TMP/old-state"; HAD_STATE=1; fi
 systemctl is-active --quiet nodeservice-agent 2>/dev/null && WAS_ACTIVE=1
+systemctl is-enabled --quiet nodeservice-agent 2>/dev/null && WAS_ENABLED=1
 systemctl stop nodeservice-agent 2>/dev/null || true
-AGENT_STOPPED=1
+INSTALL_CHANGED=1
 if [ "$PULL_MODE" = 1 ]; then
   PORT_HEX="$(printf '%04X' "$LISTEN_PORT")"
   if awk -v p="$PORT_HEX" '$2 ~ (":" p "$") && $4 == "0A" { f=1 } END { exit !f }' \
@@ -169,7 +212,24 @@ EOF
 
 systemctl daemon-reload
 systemctl enable --now nodeservice-agent
-AGENT_STOPPED=0
+
+# `systemctl enable --now` может вернуть 0, хотя процесс тут же упал и ушёл в цикл рестартов.
+# Ждём устойчивого active; для входящего режима вдобавок проверяем, что агент действительно слушает порт.
+STARTED=0 TRY=0
+while [ "$TRY" -lt 10 ]; do
+  TRY=$((TRY + 1))
+  ACTIVE=0 LISTENING=1
+  systemctl is-active --quiet nodeservice-agent 2>/dev/null && ACTIVE=1
+  if [ "$PULL_MODE" = 1 ]; then
+    LISTENING=0
+    PORT_HEX="$(printf '%04X' "$LISTEN_PORT")"
+    awk -v p="$PORT_HEX" '$2 ~ (":" p "$") && $4 == "0A" { f=1 } END { exit !f }' \
+      /proc/net/tcp /proc/net/tcp6 2>/dev/null && LISTENING=1
+  fi
+  if [ "$ACTIVE" = 1 ] && [ "$LISTENING" = 1 ]; then STARTED=1; break; fi
+  sleep 1
+done
+[ "$STARTED" = 1 ] || fail "служба агента не запустилась или не открыла назначенный порт"
 ok "агент запущен и добавлен в автозагрузку"
 if [ "$PULL_MODE" = 1 ]; then
   if command -v ufw >/dev/null 2>&1; then
@@ -183,4 +243,5 @@ if [ "$PULL_MODE" = 1 ]; then
     say "UFW не установлен; порт слушает агент, проверь внешний firewall провайдера"
   fi
 fi
+INSTALL_COMMITTED=1
 say "журнал: journalctl -u nodeservice-agent -f"
