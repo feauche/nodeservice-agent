@@ -48,6 +48,18 @@ func TestFirstLoopErrorSendFailureCancelsBlockedRead(t *testing.T) {
 	}
 }
 
+type failingPinger struct{ err error }
+
+func (p failingPinger) Ping(context.Context) error { return p.err }
+
+func TestPingLoopBreaksFrozenConnection(t *testing.T) {
+	want := errors.New("path frozen")
+	err := pingLoop(t.Context(), failingPinger{err: want}, time.Millisecond, time.Second)
+	if !errors.Is(err, want) {
+		t.Fatalf("pingLoop() = %v", err)
+	}
+}
+
 func TestRunStopsWhenEveryRouteRejectsDeletedServer(t *testing.T) {
 	_, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

@@ -66,7 +66,9 @@ func newRunCmd() *cobra.Command {
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			if st.Pull != nil {
-				return pull.Run(ctx, pull.Config{State: st.Pull, StateDir: stateDir, Version: version, Log: log})
+				return pull.Run(ctx, pull.Config{
+					State: st.Pull, StateDir: stateDir, PanelURL: st.PanelURL, Version: version, Log: log,
+				})
 			}
 
 			if raw := strings.TrimSpace(os.Getenv("NODESERVICE_WS_URLS")); raw != "" {

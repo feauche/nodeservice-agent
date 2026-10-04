@@ -1,10 +1,12 @@
 package pull
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -17,6 +19,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/feauche/nodeservice-agent/internal/state"
+	"github.com/feauche/nodeservice-agent/internal/vpnprobe"
 )
 
 func TestCertificateStableAndUnique(t *testing.T) {
@@ -86,7 +89,14 @@ func TestRunRequiresKeyAndServesSnapshot(t *testing.T) {
 			State:    &state.PullState{Port: port, AccessKey: "test-key-that-is-longer-than-32-bytes", ServerID: "s1", ServerName: "test"},
 			StateDir: dir,
 			Version:  "v0.8.0",
+			PanelURL: "https://panel.example",
 			Log:      zerolog.New(io.Discard),
+			Probe: func(_ context.Context, panelURL string, input vpnprobe.Request) vpnprobe.Result {
+				if panelURL != "https://panel.example" || input.Link != "vless://route" || input.Token != "12345678901234567890123456789012" {
+					t.Errorf("unexpected probe input: %s %#v", panelURL, input)
+				}
+				return vpnprobe.Result{OK: true, Stage: "done", Detail: "ok", LatencyMS: 12, Bytes: 65536}
+			},
 		})
 	}()
 	t.Cleanup(func() {
@@ -143,5 +153,25 @@ func TestRunRequiresKeyAndServesSnapshot(t *testing.T) {
 	defer denied.Body.Close()
 	if denied.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("wrong key status = %d", denied.StatusCode)
+	}
+
+	payload, _ := json.Marshal(vpnprobe.Request{Link: "vless://route", Token: "12345678901234567890123456789012"})
+	probeReq, _ := http.NewRequest(http.MethodPost, "https://127.0.0.1:"+strconv.Itoa(port)+"/v1/vpn-probe", bytes.NewReader(payload))
+	probeReq.Header.Set("Authorization", "Bearer test-key-that-is-longer-than-32-bytes")
+	probeReq.Header.Set("Content-Type", "application/json")
+	probeRes, err := client.Do(probeReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer probeRes.Body.Close()
+	if probeRes.StatusCode != http.StatusOK {
+		t.Fatalf("probe status = %d", probeRes.StatusCode)
+	}
+	var got vpnprobe.Result
+	if err := json.NewDecoder(probeRes.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.OK || got.Bytes != 65536 || got.Stage != "done" {
+		t.Fatalf("probe result = %#v", got)
 	}
 }

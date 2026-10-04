@@ -24,6 +24,7 @@ import (
 
 	"github.com/feauche/nodeservice-agent/internal/metrics"
 	"github.com/feauche/nodeservice-agent/internal/state"
+	"github.com/feauche/nodeservice-agent/internal/vpnprobe"
 )
 
 const (
@@ -104,18 +105,25 @@ func writeSecret(path string, data []byte) error {
 type Config struct {
 	State    *state.PullState
 	StateDir string
+	PanelURL string
 	Version  string
 	Log      zerolog.Logger
+	// Probe is replaced in tests; production uses the in-process Xray probe.
+	Probe func(context.Context, string, vpnprobe.Request) vpnprobe.Result
 }
 
-// Run serves one read-only endpoint. TLS pins the agent identity; Bearer authenticates the panel.
+func authorized(r *http.Request, accessKey string) bool {
+	want := "Bearer " + accessKey
+	got := r.Header.Get("Authorization")
+	return len(got) == len(want) && subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+// Run serves the snapshot and one strictly typed VPN probe. TLS pins the agent identity; Bearer authenticates the panel.
 func Run(ctx context.Context, cfg Config) error {
 	collector := metrics.NewCollector()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/snapshot", func(w http.ResponseWriter, r *http.Request) {
-		want := "Bearer " + cfg.State.AccessKey
-		got := r.Header.Get("Authorization")
-		if len(got) != len(want) || subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+		if !authorized(r, cfg.State.AccessKey) {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -132,12 +140,47 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		_ = json.NewEncoder(w).Encode(out)
 	})
+	probe := cfg.Probe
+	if probe == nil {
+		probe = vpnprobe.Run
+	}
+	// Несколько нод могут просесть одновременно. Четыре короткие пробы не создают очередь на весь парк,
+	// но защищают хост от десятков одновременных экземпляров Xray.
+	probeSlot := make(chan struct{}, 4)
+	mux.HandleFunc("POST /v1/vpn-probe", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(r, cfg.State.AccessKey) {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		select {
+		case probeSlot <- struct{}{}:
+			defer func() { <-probeSlot }()
+		default:
+			http.Error(w, "probe already running", http.StatusTooManyRequests)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 12<<10)
+		var input vpnprobe.Request
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil || len(input.Link) > 8192 || len(input.Token) < 32 || len(input.Token) > 200 {
+			http.Error(w, "invalid probe request", http.StatusBadRequest)
+			return
+		}
+		probeCtx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+		defer cancel()
+		result := probe(probeCtx, cfg.PanelURL, input)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(result)
+	})
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.State.Port),
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
+		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       30 * time.Second,
 		MaxHeaderBytes:    16 << 10,
 	}

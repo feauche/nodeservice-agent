@@ -158,6 +158,7 @@ func (c *Client) session(
 		ctx,
 		func(loopCtx context.Context) error { return c.readLoop(loopCtx, conn) },
 		func(loopCtx context.Context) error { return c.sendLoop(loopCtx, conn, welcome) },
+		func(loopCtx context.Context) error { return pingLoop(loopCtx, conn, 30*time.Second, 15*time.Second) },
 	)
 	return true, sessionErr
 }
@@ -181,17 +182,41 @@ func (c *Client) applyWelcome(welcome *proto.Welcome) {
 // firstLoopError запускает чтение и отправку вместе; первая ошибка отменяет соседний цикл.
 func firstLoopError(
 	parent context.Context,
-	readLoop func(context.Context) error,
-	sendLoop func(context.Context) error,
+	loops ...func(context.Context) error,
 ) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	errs := make(chan error, 2)
-	go func() { errs <- readLoop(ctx) }()
-	go func() { errs <- sendLoop(ctx) }()
+	errs := make(chan error, len(loops))
+	for _, loop := range loops {
+		go func() { errs <- loop(ctx) }()
+	}
 	err := <-errs
 	cancel()
 	return err
+}
+
+type websocketPinger interface {
+	Ping(context.Context) error
+}
+
+// pingLoop обнаруживает зависший TCP/WebSocket. Системные повторы иначе могут держать мёртвое
+// соединение около пятнадцати минут, хотя панель уже считает агент недоступным.
+func pingLoop(ctx context.Context, conn websocketPinger, every, timeout time.Duration) error {
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			pingCtx, cancel := context.WithTimeout(ctx, timeout)
+			err := conn.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				return fmt.Errorf("WebSocket ping: %w", err)
+			}
+		}
+	}
 }
 
 // Handshake выполняет hello → challenge → auth → welcome. Вынесен отдельно для тестов.
