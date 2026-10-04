@@ -14,18 +14,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
       - name: Проверки
         run: |
           go vet ./...
           go test ./...
       - name: Сборка (amd64 + arm64 + checksums)
         run: make build-all VERSION="${GITHUB_REF_NAME}"
+      - name: Собрать changelog после прошлого релиза
+        run: node scripts/release-notes.mjs --tag "${GITHUB_REF_NAME}" > release-notes.md
       - name: Публикация релиза
         uses: softprops/action-gh-release@v2
         with:
+          body_path: release-notes.md
           files: |
             dist/*
             scripts/install.sh
