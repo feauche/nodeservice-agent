@@ -87,6 +87,46 @@ restore_file() {
   fi
 }
 
+# После успешного запуска штатной службы убираем только другие экземпляры NodeService Agent. Старые
+# ручные запуски и unit-файлы иначе продолжают отвечать панели прежней версией. Аргументы процессов не
+# читаем и посторонние службы не трогаем: признак — точное имя бинаря агента в ExecStart или /proc/*/exe.
+cleanup_duplicate_agents() {
+  main_pid="$(systemctl show nodeservice-agent -p MainPID --value 2>/dev/null || true)"
+  case "$main_pid" in *[!0-9]*|'') main_pid=0 ;; esac
+  extra_units=""
+  for f in /etc/systemd/system/*.service /usr/lib/systemd/system/*.service /lib/systemd/system/*.service; do
+    [ -f "$f" ] || continue
+    unit="${f##*/}"
+    [ "$unit" = nodeservice-agent.service ] && continue
+    grep -Eq '^[[:space:]]*ExecStart=.*nodeservice-agent([[:space:]]|$)' "$f" 2>/dev/null || continue
+    systemctl disable --now "$unit" >/dev/null 2>&1 || true
+    extra_units="$extra_units $unit"
+  done
+
+  extra_pids=""
+  for p in /proc/[0-9]*; do
+    pid="${p##*/}"
+    [ "$pid" = "$main_pid" ] && continue
+    [ -r "$p/exe" ] || continue
+    exe="$(readlink "$p/exe" 2>/dev/null || true)"
+    clean="${exe% (deleted)}"
+    base="${clean##*/}"
+    case "$base" in
+      nodeservice-agent|nodeservice-agent_linux_*)
+        kill "$pid" 2>/dev/null || true
+        extra_pids="$extra_pids $pid"
+        ;;
+    esac
+  done
+  if [ -n "$extra_pids" ]; then
+    sleep 1
+    for pid in $extra_pids; do kill -9 "$pid" 2>/dev/null || true; done
+  fi
+  if [ -n "$extra_units$extra_pids" ]; then
+    ok "лишние экземпляры агента остановлены"
+  fi
+}
+
 cleanup() {
   rc=$?
   trap - 0
@@ -232,6 +272,7 @@ while [ "$TRY" -lt 10 ]; do
 done
 [ "$STARTED" = 1 ] || fail "служба агента не запустилась или не открыла назначенный порт"
 ok "агент запущен и добавлен в автозагрузку"
+cleanup_duplicate_agents
 if [ "$PULL_MODE" = 1 ]; then
   if command -v ufw >/dev/null 2>&1; then
     ufw allow from "$PANEL_IP" to any port "$LISTEN_PORT" proto tcp comment 'NodeService agent' >/dev/null
@@ -243,6 +284,10 @@ if [ "$PULL_MODE" = 1 ]; then
   elif ! command -v ufw >/dev/null 2>&1; then
     say "UFW не установлен; порт слушает агент, проверь внешний firewall провайдера"
   fi
+elif command -v ufw >/dev/null 2>&1; then
+  # Ручная установка переключает агент обратно на исходящий режим: старый входящий порт уже не слушается.
+  ufw status numbered 2>/dev/null | sed -n '/NodeService agent/s/^\[ *\([0-9][0-9]*\)\].*/\1/p' \
+    | sort -rn | while read -r n; do yes | ufw delete "$n" >/dev/null 2>&1 || true; done
 fi
 INSTALL_COMMITTED=1
 say "журнал: journalctl -u nodeservice-agent -f"
